@@ -1,7 +1,2 @@
-fastapi
-uvicorn
-openai-whisper
-python-dotenv
-python-multipart  # Add this line
-# You can remove the comment about torch and numpy if you install them
-# in this file instead of the Dockerfile for simplicity.
+# Core dependencies are installed directly in Dockerfile for explicit version control.
+# This file can be used for other, less critical dependencies if needed.

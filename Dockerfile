@@ -7,7 +7,7 @@ WORKDIR /app
 # Copy requirements.txt and install dependencies
 COPY requirements.txt .
 RUN pip uninstall -y numpy torch
-RUN pip install --no-cache-dir numpy==1.24.4 torch==2.1.0 openai-whisper python-dotenv fastapi uvicorn
+RUN pip install --no-cache-dir fastapi uvicorn python-dotenv openai-whisper torch==2.1.0 numpy==1.24.4 python-multipart
 # You might also need to explicitly install other direct dependencies here if they are not picked up by whisper/fastapi
 
 # Copy the rest of your application code
