@@ -1,6 +1,7 @@
 fastapi
 uvicorn
-python-dotenv
 openai-whisper
-python-multipart # Add this line
-# We are explicitly installing torch and numpy in the Dockerfile
+python-dotenv
+python-multipart  # Add this line
+# You can remove the comment about torch and numpy if you install them
+# in this file instead of the Dockerfile for simplicity.

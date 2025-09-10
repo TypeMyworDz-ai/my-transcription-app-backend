@@ -17,4 +17,4 @@ COPY . .
 EXPOSE 8000
 
 # Command to run the application
-CMD sh -c "uvicorn main:app --host 0.0.0.0 --port $PORT"
+CMD ["/bin/bash", "-c", "uvicorn main:app --host 0.0.0.0 --port $PORT"]
