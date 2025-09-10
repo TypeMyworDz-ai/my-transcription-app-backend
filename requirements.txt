@@ -2,4 +2,5 @@ fastapi
 uvicorn
 python-dotenv
 openai-whisper
-torch==2.1.0 # Specify an older, known-compatible torch version
+torch==2.1.0 # Keep this specific version for now as it was chosen for triton compatibility
+numpy==1.24.4 # Explicitly add numpy with a version known to be compatible with older torch/whisper
