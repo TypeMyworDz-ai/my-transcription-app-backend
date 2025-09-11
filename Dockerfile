@@ -21,4 +21,4 @@ COPY . .
 EXPOSE 8000
 
 # Command to run the application, using shell form for environment variable expansion
-'sh -c "gunicorn --bind 0.0.0.0:$PORT --timeout 600 app:app"'?
+uvicorn main:app --host 0.0.0.0 --port "$PORT"
