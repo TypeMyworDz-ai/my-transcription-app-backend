@@ -1,2 +1,7 @@
-# Core dependencies are installed directly in Dockerfile for explicit version control.
-# This file can be used for other, less critical dependencies if needed.
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+python-dotenv==1.0.0
+openai-whisper==20231117
+torch==2.1.0
+torchaudio==2.1.0
