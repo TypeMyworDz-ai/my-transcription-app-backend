@@ -17,8 +17,8 @@ app = FastAPI(title="Transcription Service")
 # IMPORTANT: Adjust origins for your specific frontend deployment URLs
 origins = [
     "http://localhost:3000",                  # Your local React app
-    "https://typemywordzaiapp-git-main-james-gitukus-projects.vercel.app",    # Your Vercel preview frontend URL
-    "https://typemywordz-frontend.vercel.app", # Your live Vercel frontend URL
+    "https://typemywordzaiapp-git-main-james-gitukus-projects.vercel.app",    # Your Vercel preview frontend URL (if still active)
+    "https://typemywordzspeechai.vercel.app", # <--- YOUR NEW, CORRECT LIVE VERCEL URL
     # Add any other frontend URLs that need to access this backend
 ]
 
