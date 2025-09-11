@@ -33,7 +33,7 @@ app.add_middleware(
 # Load the AI model for transcription
 print("Loading Whisper model... This might take a moment.")
 # Using the 'tiny' model for better memory compatibility on free tiers
-model = whisper.load_model("tiny") 
+mmodel = whisper.load_model("tiny.en") # Using the 'tiny.en' model for English-only and less memory 
 print("Model loaded successfully!")
 
 # Store transcription jobs in memory (for simplicity, reset on server restart)
