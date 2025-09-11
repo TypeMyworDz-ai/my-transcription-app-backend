@@ -18,7 +18,7 @@ app = FastAPI(title="Transcription Service")
 origins = [
     "http://localhost:3000",                  # Your local React app
     "https://typemywordzaiapp-git-main-james-gitukus-projects.vercel.app",    # Your Vercel preview frontend URL (if still active)
-    "https://typemywordzspeechai.vercel.app", # <--- YOUR NEW, CORRECT LIVE VERCEL URL
+    "https://typemywordzspeechai.vercel.app", # YOUR NEW, CORRECT LIVE VERCEL URL
     # Add any other frontend URLs that need to access this backend
 ]
 
@@ -32,8 +32,8 @@ app.add_middleware(
 
 # Load the AI model for transcription
 print("Loading Whisper model... This might take a moment.")
-# Using the 'tiny' model for better memory compatibility on free tiers
-mmodel = whisper.load_model("tiny.en") # Using the 'tiny.en' model for English-only and less memory 
+# Using the 'tiny.en' model for English-only and less memory
+model = whisper.load_model("tiny.en") # Corrected: 'mmodel' changed to 'model'
 print("Model loaded successfully!")
 
 # Store transcription jobs in memory (for simplicity, reset on server restart)
