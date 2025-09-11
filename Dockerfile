@@ -1,11 +1,11 @@
 # Use a specific Python base image (e.g., 3.10-slim-buster or 3.11-slim-bullseye)
-FROM python:3.10-slim-buster
+FROM python:3.10-slim-bullseye
 
 # Set working directory
 WORKDIR /app
 
 # Install ffmpeg for audio/video processing
-# This uses apt-get because the base image is Debian-based (buster)
+# This uses apt-get because the base image is Debian-based (bullseye)
 RUN apt-get update && apt-get install -y ffmpeg
 
 # Copy requirements.txt (now empty, but good practice to keep)
