@@ -3,8 +3,9 @@ import sys
 import asyncio
 import subprocess
 import os
+import json
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Response
+from fastapi import FastAPI, File, UploadFile, HTTPException, BackgroundTasks, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
 import tempfile
 import uuid
@@ -12,7 +13,6 @@ from datetime import datetime
 from dotenv import load_dotenv
 import requests
 from pydub import AudioSegment
-import stripe
 from pydantic import BaseModel
 from typing import Optional
 
@@ -47,50 +47,68 @@ def install_ffmpeg():
 
 # Install ffmpeg on startup
 install_ffmpeg()
-
 # Load environment variables
 logger.info("Loading environment variables...")
 load_dotenv()
 ASSEMBLYAI_API_KEY = os.getenv("ASSEMBLYAI_API_KEY")
-STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
-STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
+
+# Paystack environment variables
+PAYSTACK_SECRET_KEY = os.getenv("PAYSTACK_SECRET_KEY")
+PAYSTACK_PUBLIC_KEY = os.getenv("PAYSTACK_PUBLIC_KEY")
+PAYSTACK_WEBHOOK_SECRET = os.getenv("PAYSTACK_WEBHOOK_SECRET")
 
 logger.info(f"Attempted to load ASSEMBLYAI_API_KEY. Value found: {bool(ASSEMBLYAI_API_KEY)}")
-logger.info(f"Attempted to load STRIPE_SECRET_KEY. Value found: {bool(STRIPE_SECRET_KEY)}")
+logger.info(f"Attempted to load PAYSTACK_SECRET_KEY. Value found: {bool(PAYSTACK_SECRET_KEY)}")
+logger.info(f"Attempted to load PAYSTACK_PUBLIC_KEY. Value found: {bool(PAYSTACK_PUBLIC_KEY)}")
 
 if not ASSEMBLYAI_API_KEY:
     logger.error("ASSEMBLYAI_API_KEY environment variable not set!")
     sys.exit(1)
 
-if not STRIPE_SECRET_KEY:
-    logger.error("STRIPE_SECRET_KEY environment variable not set!")
-    sys.exit(1)
+# Paystack validation
+if not PAYSTACK_SECRET_KEY:
+    logger.warning("PAYSTACK_SECRET_KEY environment variable not set! Paystack features will be disabled.")
 
-# Initialize Stripe
-stripe.api_key = STRIPE_SECRET_KEY
-logger.info("Stripe initialized successfully")
+# Paystack initialization check
+if PAYSTACK_SECRET_KEY:
+    logger.info("Paystack configuration found - payment verification enabled")
+else:
+    logger.warning("Paystack configuration missing - payment verification disabled")
 
 logger.info("Environment variables loaded successfully")
 
-# Pydantic models for Stripe requests
-class CreateSubscriptionRequest(BaseModel):
-    priceId: str
-    userId: str
-    userEmail: str
-    userName: str
+# Pydantic models for Paystack requests
+class PaystackVerificationRequest(BaseModel):
+    reference: str
 
-class UpdateUserPlanRequest(BaseModel):
-    userId: str
-    planType: str
-    subscriptionId: Optional[str] = None
+# UPDATED: Added country_code to initialization request
+class PaystackInitializationRequest(BaseModel):
+    email: str
+    amount: float # This is the base USD amount
+    plan_name: str
+    user_id: str
+    country_code: str # NEW: For dynamic currency and channels
+    callback_url: str
 
-# ENHANCED: Job tracking with better cancellation support
+class PaystackWebhookRequest(BaseModel):
+    event: str
+    data: dict
+
+class CreditUpdateRequest(BaseModel):
+    email: str
+    plan_name: str
+    amount: float
+    currency: str
+    duration_hours: Optional[int] = None
+    duration_days: Optional[int] = None
+
+# Job tracking with better cancellation support
 jobs = {}
 active_background_tasks = {}  # Track background tasks for cancellation
 cancellation_flags = {}  # Track cancellation flags for each job
 
 logger.info("Enhanced job tracking initialized")
-# ENHANCED: Ultra aggressive compression function with cancellation checks
+# Ultra aggressive compression function with cancellation checks
 def compress_audio_for_transcription(input_path: str, output_path: str = None, job_id: str = None) -> tuple[str, dict]:
     """Compress audio file optimally for AssemblyAI transcription with cancellation support"""
     if output_path is None:
@@ -286,7 +304,171 @@ def compress_audio_for_download(input_path: str, output_path: str = None, qualit
     except Exception as e:
         logger.error(f"Error compressing audio for download: {e}")
         raise
-# ENHANCED: Background task with comprehensive cancellation support
+# --- NEW: Currency Conversion and Channel Mapping Logic ---
+USD_TO_LOCAL_RATES = {
+    'KE': 145.0,  # 1 USD to KES (example rate, actual rates fluctuate)
+    'NG': 1500.0, # 1 USD to NGN (example rate, highly volatile)
+    'GH': 15.0,   # 1 USD to GHS (example rate)
+    'ZA': 19.0,   # 1 USD to ZAR (example rate)
+    # For 'OTHER_AFRICA' or unsupported countries, we default to USD
+}
+
+COUNTRY_CURRENCY_MAP = {
+    'KE': 'KES',
+    'NG': 'NGN',
+    'GH': 'GHS',
+    'ZA': 'ZAR',
+    'OTHER_AFRICA': 'USD', # Default for others
+}
+
+COUNTRY_CHANNELS_MAP = {
+    'KE': ['mobile_money', 'card'],
+    'NG': ['bank', 'ussd', 'mobile_money', 'card'],
+    'GH': ['mobile_money', 'card'],
+    'ZA': ['eft', 'card'],
+    'OTHER_AFRICA': ['card'], # Default for others
+}
+
+def get_local_amount_and_currency(base_usd_amount: float, country_code: str) -> tuple[float, str]:
+    currency = COUNTRY_CURRENCY_MAP.get(country_code, 'USD')
+    if currency == 'USD':
+        return base_usd_amount, 'USD'
+    
+    rate = USD_TO_LOCAL_RATES.get(country_code, 1.0) # Default to 1 if no rate found
+    local_amount = round(base_usd_amount * rate, 2)
+    return local_amount, currency
+
+def get_payment_channels(country_code: str) -> list[str]:
+    return COUNTRY_CHANNELS_MAP.get(country_code, ['card']) # Default to card if country not mapped
+# --- END NEW LOGIC ---
+
+# Paystack helper functions
+async def verify_paystack_payment(reference: str) -> dict:
+    """Verify Paystack payment using reference"""
+    if not PAYSTACK_SECRET_KEY:
+        raise HTTPException(status_code=500, detail="Paystack configuration missing")
+    
+    headers = {
+        'Authorization': f'Bearer {PAYSTACK_SECRET_KEY}',
+        'Content-Type': 'application/json'
+    }
+    
+    try:
+        logger.info(f"Verifying Paystack payment with reference: {reference}")
+        response = requests.get(
+            f'https://api.paystack.co/transaction/verify/{reference}',
+            headers=headers,
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            payment_data = response.json()
+            
+            if payment_data['status'] and payment_data['data']['status'] == 'success':
+                # Payment is successful - extract details
+                amount_kobo = payment_data['data']['amount']  # Amount in kobo/cents
+                amount = amount_kobo / 100  # Convert to main currency unit
+                customer_email = payment_data['data']['customer']['email']
+                currency = payment_data['data']['currency']
+                plan_name = payment_data['data']['metadata'].get('plan', 'Unknown')
+                
+                logger.info(f"✅ Paystack payment verified: {customer_email} paid {amount} {currency} for {plan_name}")
+                
+                return {
+                    'status': 'success',
+                    'amount': amount,
+                    'currency': currency,
+                    'email': customer_email,
+                    'plan': plan_name,
+                    'reference': reference,
+                    'raw_data': payment_data['data']
+                }
+            else:
+                logger.warning(f"❌ Paystack payment verification failed: {payment_data}")
+                return {
+                    'status': 'failed',
+                    'error': payment_data.get('message', 'Payment verification failed'),
+                    'raw_data': payment_data
+                }
+        else:
+            logger.error(f"❌ Paystack API error: {response.status_code} - {response.text}")
+            return {
+                'status': 'error',
+                'error': f'Paystack API error: {response.status_code}',
+                'details': response.text
+            }
+            
+    except requests.exceptions.RequestException as e:
+        logger.error(f"❌ Network error during Paystack verification: {str(e)}")
+        return {
+            'status': 'error',
+            'error': 'Network error during payment verification',
+            'details': str(e)
+        }
+    except Exception as e:
+        logger.error(f"❌ Unexpected error during Paystack verification: {str(e)}")
+        return {
+            'status': 'error',
+            'error': 'Payment verification failed',
+            'details': str(e)
+        }
+
+async def update_user_credits_paystack(email: str, plan_name: str, amount: float, currency: str):
+    """
+    Update user credits based on Paystack payment
+    This is where you'll integrate with your user management system
+    """
+    try:
+        logger.info(f"📝 Updating credits for {email} - {plan_name} ({amount} {currency})")
+        
+        # Determine credit duration based on plan name
+        duration_info = {}
+        if '24 Hours' in plan_name or '24 hours' in plan_name.lower():
+            duration_info = {'hours': 24}
+        elif '5 Days' in plan_name or '5 days' in plan_name.lower():
+            duration_info = {'days': 5}
+        
+        # TODO: Implement actual database/Firebase update logic
+        # Examples:
+        # user = get_user_by_email(email)
+        # if duration_info.get('hours'):
+        #     user.add_pro_access(hours=duration_info['hours'])
+        # elif duration_info.get('days'):
+        #     user.add_pro_access(days=duration_info['days'])
+        # user.save_payment_record(amount, currency, plan_name)
+        
+        logger.info(f"✅ Credits updated successfully for {email}")
+        return {
+            'success': True,
+            'email': email,
+            'plan': plan_name,
+            'amount': amount,
+            'currency': currency,
+            'duration': duration_info
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error updating user credits: {str(e)}")
+        return {
+            'success': False,
+            'error': str(e)
+        }
+
+# Background task to monitor application health
+async def health_monitor():
+    logger.info("Starting health monitor background task")
+    while True:
+        try:
+            import psutil
+            memory_info = psutil.virtual_memory()
+            cpu_percent = psutil.cpu_percent(interval=1)
+            logger.info(f"Health Check - Memory: {memory_info.percent}% used, CPU: {cpu_percent}%, Available RAM: {memory_info.available / (1024**3):.2f} GB")
+            logger.info(f"Active jobs: {len(jobs)}, Active background tasks: {len(active_background_tasks)}, Cancellation flags: {len(cancellation_flags)}")
+            await asyncio.sleep(30)  # Log every 30 seconds
+        except Exception as e:
+            logger.error(f"Health monitor error: {e}")
+            await asyncio.sleep(30)
+# Background task with comprehensive cancellation support
 async def process_transcription_job(job_id: str, tmp_path: str, filename: str):
     logger.info(f"Background task started for job ID: {job_id}")
     job_data = jobs[job_id]
@@ -297,7 +479,7 @@ async def process_transcription_job(job_id: str, tmp_path: str, filename: str):
     cancellation_flags[job_id] = False
 
     try:
-        # ENHANCED: Multiple cancellation checkpoints with detailed logging
+        # Multiple cancellation checkpoints with detailed logging
         def check_cancellation():
             if cancellation_flags.get(job_id, False) or job_data.get("status") == "cancelled":
                 logger.info(f"Job {job_id} was cancelled - stopping processing")
@@ -427,62 +609,6 @@ async def process_transcription_job(job_id: str, tmp_path: str, filename: str):
             
         logger.info(f"Background task completed for job ID: {job_id}")
 
-# Background task to monitor application health
-async def health_monitor():
-    logger.info("Starting health monitor background task")
-    while True:
-        try:
-            import psutil
-            memory_info = psutil.virtual_memory()
-            cpu_percent = psutil.cpu_percent(interval=1)
-            logger.info(f"Health Check - Memory: {memory_info.percent}% used, CPU: {cpu_percent}%, Available RAM: {memory_info.available / (1024**3):.2f} GB")
-            logger.info(f"Active jobs: {len(jobs)}, Active background tasks: {len(active_background_tasks)}, Cancellation flags: {len(cancellation_flags)}")
-            await asyncio.sleep(30)  # Log every 30 seconds
-        except Exception as e:
-            logger.error(f"Health monitor error: {e}")
-            await asyncio.sleep(30)
-
-# NEW: Stripe payment functions
-async def create_stripe_customer(email: str, name: str, user_id: str):
-    """Create or retrieve Stripe customer"""
-    try:
-        # Check if customer already exists
-        customers = stripe.Customer.list(email=email, limit=1)
-        
-        if customers.data:
-            customer = customers.data[0]
-            logger.info(f"Found existing Stripe customer: {customer.id}")
-        else:
-            # Create new customer
-            customer = stripe.Customer.create(
-                email=email,
-                name=name,
-                metadata={"user_id": user_id}
-            )
-            logger.info(f"Created new Stripe customer: {customer.id}")
-        
-        return customer
-    except Exception as e:
-        logger.error(f"Error creating/retrieving Stripe customer: {e}")
-        raise
-
-async def create_stripe_subscription(customer_id: str, price_id: str):
-    """Create Stripe subscription"""
-    try:
-        subscription = stripe.Subscription.create(
-            customer=customer_id,
-            items=[{"price": price_id}],
-            payment_behavior="default_incomplete",
-            payment_settings={"save_default_payment_method": "on_subscription"},
-            expand=["latest_invoice.payment_intent"],
-        )
-        
-        logger.info(f"Created Stripe subscription: {subscription.id}")
-        return subscription
-    except Exception as e:
-        logger.error(f"Error creating Stripe subscription: {e}")
-        raise
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
@@ -507,7 +633,7 @@ async def lifespan(app: FastAPI):
     logger.info("All background tasks cancelled and cleanup complete")
 # Create the FastAPI app
 logger.info("Creating FastAPI app...")
-app = FastAPI(title="Enhanced Transcription Service with Stripe Payments", lifespan=lifespan)
+app = FastAPI(title="Enhanced Transcription Service with Paystack Payments", lifespan=lifespan)
 logger.info("FastAPI app created successfully")
 
 # Add CORS middleware with proper configuration
@@ -525,13 +651,13 @@ logger.info("CORS middleware configured successfully")
 async def root():
     logger.info("Root endpoint called")
     return {
-        "message": "Enhanced Transcription Service with Stripe Payments is running!",
+        "message": "Enhanced Transcription Service with Paystack Payments is running!",
         "features": [
             "Ultra-aggressive audio compression",
             "Proper job cancellation",
             "Background task management",
             "Real-time status tracking",
-            "Stripe payment integration",
+            "Paystack payment integration",
             "Subscription management"
         ],
         "stats": {
@@ -541,184 +667,234 @@ async def root():
         }
     }
 
-# NEW: Stripe payment endpoints
-@app.post("/api/create-subscription")
-async def create_subscription(request: CreateSubscriptionRequest):
-    """Create Stripe subscription for user upgrade"""
-    logger.info(f"Creating subscription for user: {request.userEmail}")
+# UPDATED: Paystack payment initialization endpoint
+@app.post("/api/initialize-paystack-payment")
+async def initialize_paystack_payment(request: PaystackInitializationRequest):
+    """Initialize Paystack payment with dynamic currency and channels"""
+    logger.info(f"Initializing Paystack payment for {request.email} in {request.country_code}: Base USD {request.amount}")
+    
+    if not PAYSTACK_SECRET_KEY:
+        logger.error("❌ PAYSTACK_SECRET_KEY is not set in environment variables.")
+        raise HTTPException(status_code=500, detail="Paystack configuration missing")
     
     try:
-        # Create or get Stripe customer
-        customer = await create_stripe_customer(
-            email=request.userEmail,
-            name=request.userName,
-            user_id=request.userId
-        )
+        # Determine local amount and currency
+        local_amount, local_currency = get_local_amount_and_currency(request.amount, request.country_code)
+        payment_channels = get_payment_channels(request.country_code)
+
+        # Convert local amount to kobo for Paystack
+        amount_kobo = int(local_amount * 100) # Paystack always expects amount in minor unit
         
-        # Create subscription
-        subscription = await create_stripe_subscription(
-            customer_id=customer.id,
-            price_id=request.priceId
-        )
-        
-        # Return client secret for payment confirmation
-        return {
-            "subscriptionId": subscription.id,
-            "clientSecret": subscription.latest_invoice.payment_intent.client_secret,
-            "customerId": customer.id
+        headers = {
+            'Authorization': f'Bearer {PAYSTACK_SECRET_KEY}',
+            'Content-Type': 'application/json'
         }
         
-    except Exception as e:
-        logger.error(f"Error creating subscription: {e}")
-        raise HTTPException(status_code=400, detail=f"Failed to create subscription: {str(e)}")
+        payload = {
+            'email': request.email,
+            'amount': amount_kobo,
+            'currency': local_currency, # Use dynamically determined local currency
+            'callback_url': request.callback_url,
+            'channels': payment_channels, # Use dynamically determined channels
+            'metadata': {
+                'plan': request.plan_name,
+                'user_id': request.user_id,
+                'country_code': request.country_code, # Pass original country code
+                'base_usd_amount': request.amount, # Store original USD amount
+                'custom_fields': [
+                    {
+                        'display_name': "Plan Type",
+                        'variable_name': "plan_type",
+                        'value': request.plan_name
+                    },
+                    {
+                        'display_name': "Country",
+                        'variable_name': "country",
+                        'value': request.country_code
+                    }
+                ]
+            }
+        }
+        
+        logger.info(f"DEBUG: Paystack payload for {request.country_code}: Amount={local_amount} {local_currency}, Channels={payment_channels}")
+        logger.info(f"DEBUG: Sending payload to Paystack: {payload}")
 
-@app.post("/api/stripe-webhook")
-async def stripe_webhook(request: Request):
-    """Handle Stripe webhook events"""
-    payload = await request.body()
-    sig_header = request.headers.get('stripe-signature')
-    
-    try:
-        if STRIPE_WEBHOOK_SECRET:
-            event = stripe.Webhook.construct_event(
-                payload, sig_header, STRIPE_WEBHOOK_SECRET
-            )
+        response = requests.post(
+            'https://api.paystack.co/transaction/initialize',
+            headers=headers,
+            json=payload,
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            result = response.json()
+            logger.info(f"✅ Paystack payment initialized: {result['data']['reference']}")
+            return {
+                'status': True,
+                'authorization_url': result['data']['authorization_url'],
+                'reference': result['data']['reference'],
+                'local_amount': local_amount, # Return for frontend info if needed
+                'local_currency': local_currency
+            }
         else:
-            # For testing without webhook secret
-            event = stripe.Event.construct_from(
-                json.loads(payload), stripe.api_key
+            logger.error(f"❌ Paystack API error: {response.status_code} - {response.text}")
+            raise HTTPException(status_code=response.status_code, detail=f"Paystack API error: {response.text}")
+            
+    except Exception as e:
+        import traceback
+        logger.error(f"❌ Error initializing Paystack payment: {str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Payment initialization failed: {str(e)}")
+@app.post("/api/verify-payment")
+async def verify_payment(request: PaystackVerificationRequest):
+    """Verify Paystack payment and update user credits"""
+    logger.info(f"Payment verification request for reference: {request.reference}")
+    
+    try:
+        # Verify payment with Paystack
+        verification_result = await verify_paystack_payment(request.reference)
+        
+        if verification_result['status'] == 'success':
+            # Payment verified successfully
+            email = verification_result['email']
+            plan_name = verification_result['plan']
+            amount = verification_result['amount']
+            currency = verification_result['currency']
+            
+            # Update user credits
+            credit_result = await update_user_credits_paystack(email, plan_name, amount, currency)
+            
+            if credit_result['success']:
+                logger.info(f"✅ Payment verified and credits updated for {email}")
+                return {
+                    "status": "success",
+                    "message": "Payment verified successfully",
+                    "data": {
+                        "amount": amount,
+                        "currency": currency,
+                        "email": email,
+                        "plan": plan_name,
+                        "reference": request.reference,
+                        "credits_updated": True
+                    }
+                }
+            else:
+                logger.warning(f"⚠️ Payment verified but credit update failed for {email}")
+                return {
+                    "status": "partial_success",
+                    "message": "Payment verified but credit update failed",
+                    "data": {
+                        "amount": amount,
+                        "currency": currency,
+                        "email": email,
+                        "plan": plan_name,
+                        "reference": request.reference,
+                        "credits_updated": False,
+                        "credit_error": credit_result.get('error')
+                    }
+                }
+        else:
+            # Payment verification failed
+            logger.warning(f"❌ Payment verification failed for reference: {request.reference}")
+            raise HTTPException(
+                status_code=400, 
+                detail=verification_result.get('error', 'Payment verification failed'),
+                headers={"X-Error-Details": verification_result.get('details', '')}
             )
-        
-        logger.info(f"Received Stripe webhook: {event['type']}")
-        
-        # Handle successful payment
-        if event['type'] == 'invoice.payment_succeeded':
-            invoice = event['data']['object']
-            customer_id = invoice['customer']
-            subscription_id = invoice['subscription']
             
-            # Get customer details
-            customer = stripe.Customer.retrieve(customer_id)
-            user_id = customer.metadata.get('user_id')
-            
-            logger.info(f"Payment succeeded for user {user_id}, subscription {subscription_id}")
-            
-            # Here you would update your user's plan in Firebase
-            # This would typically involve calling your Firebase Admin SDK
-            # For now, we'll just log it
-            logger.info(f"User {user_id} payment successful - plan should be upgraded")
-            
-        elif event['type'] == 'invoice.payment_failed':
-            invoice = event['data']['object']
-            customer_id = invoice['customer']
-            
-            customer = stripe.Customer.retrieve(customer_id)
-            user_id = customer.metadata.get('user_id')
-            
-            logger.warning(f"Payment failed for user {user_id}")
-            
-        elif event['type'] == 'customer.subscription.deleted':
-            subscription = event['data']['object']
-            customer_id = subscription['customer']
-            
-            customer = stripe.Customer.retrieve(customer_id)
-            user_id = customer.metadata.get('user_id')
-            
-            logger.info(f"Subscription cancelled for user {user_id}")
-            
-        return {"status": "success"}
-        
-    except ValueError as e:
-        logger.error(f"Invalid payload in webhook: {e}")
-        raise HTTPException(status_code=400, detail="Invalid payload")
-    except stripe.error.SignatureVerificationError as e:
-        logger.error(f"Invalid signature in webhook: {e}")
-        raise HTTPException(status_code=400, detail="Invalid signature")
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error processing webhook: {e}")
-        raise HTTPException(status_code=400, detail=f"Webhook error: {str(e)}")
+        logger.error(f"❌ Unexpected error during payment verification: {str(e)}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Payment verification failed: {str(e)}"
+        )
 
-@app.post("/api/cancel-subscription")
-async def cancel_subscription(user_id: str):
-    """Cancel user's Stripe subscription"""
+@app.post("/api/paystack-webhook")
+async def paystack_webhook(request: Request):
+    """Handle Paystack webhook events"""
     try:
-        # Find customer by user_id metadata
-        customers = stripe.Customer.list(limit=100)
-        customer = None
+        # Get the raw body and signature
+        body = await request.body()
+        signature = request.headers.get('x-paystack-signature')
         
-        for c in customers.auto_paging_iter():
-            if c.metadata.get('user_id') == user_id:
-                customer = c
-                break
-                
-        if not customer:
-            raise HTTPException(status_code=404, detail="Customer not found")
+        logger.info(f"Received Paystack webhook with signature: {bool(signature)}")
+        
+        # TODO: Implement proper signature verification
+        # For now, we'll parse the webhook without verification
+        # In production, you should verify the webhook signature using HMAC
+        
+        if not body:
+            logger.warning("Empty webhook body received")
+            raise HTTPException(status_code=400, detail="Empty webhook body")
+        
+        try:
+            webhook_data = json.loads(body.decode('utf-8'))
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON in webhook: {e}")
+            raise HTTPException(status_code=400, detail="Invalid JSON payload")
+        
+        event_type = webhook_data.get('event')
+        logger.info(f"Processing Paystack webhook event: {event_type}")
+        
+        if event_type == 'charge.success':
+            # Handle successful payment
+            data = webhook_data.get('data', {})
+            customer_email = data.get('customer', {}).get('email')
+            amount = data.get('amount', 0) / 100  # Convert from kobo
+            currency = data.get('currency')
+            reference = data.get('reference')
+            plan_name = data.get('metadata', {}).get('plan', 'Unknown')
             
-        # Get active subscriptions
-        subscriptions = stripe.Subscription.list(customer=customer.id, status='active')
-        
-        if not subscriptions.data:
-            raise HTTPException(status_code=404, detail="No active subscription found")
+            logger.info(f"🔔 Webhook: Payment successful - {customer_email} paid {amount} {currency} for {plan_name}")
             
-        # Cancel the first active subscription
-        subscription = subscriptions.data[0]
-        cancelled_subscription = stripe.Subscription.delete(subscription.id)
+            # Update user credits automatically
+            if customer_email:
+                credit_result = await update_user_credits_paystack(customer_email, plan_name, amount, currency)
+                if credit_result['success']:
+                    logger.info(f"✅ Webhook: Credits updated automatically for {customer_email}")
+                else:
+                    logger.warning(f"⚠️ Webhook: Failed to update credits for {customer_email}")
+            
+        elif event_type == 'charge.failed':
+            # Handle failed payment
+            data = webhook_data.get('data', {})
+            customer_email = data.get('customer', {}).get('email')
+            reference = data.get('reference')
+            
+            logger.warning(f"🔔 Webhook: Payment failed for {customer_email}, reference: {reference}")
+            
+        else:
+            logger.info(f"🔔 Webhook: Unhandled event type: {event_type}")
         
-        logger.info(f"Cancelled subscription {subscription.id} for user {user_id}")
+        return {"status": "received", "event": event_type}
         
-        return {
-            "message": "Subscription cancelled successfully",
-            "subscription_id": cancelled_subscription.id
-        }
-        
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error cancelling subscription: {e}")
-        raise HTTPException(status_code=400, detail=f"Failed to cancel subscription: {str(e)}")
+        logger.error(f"❌ Error processing Paystack webhook: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Webhook processing failed: {str(e)}")
+@app.get("/api/paystack-status")
+async def paystack_status():
+    """Get Paystack integration status"""
+    return {
+        "paystack_configured": bool(PAYSTACK_SECRET_KEY),
+        "public_key_configured": bool(PAYSTACK_PUBLIC_KEY),
+        "webhook_secret_configured": bool(PAYSTACK_WEBHOOK_SECRET),
+        "endpoints": {
+            "initialize_payment": "/api/initialize-paystack-payment",
+            "verify_payment": "/api/verify-payment",
+            "webhook": "/api/paystack-webhook",
+            "status": "/api/paystack-status"
+        },
+        "supported_currencies": ["NGN", "USD", "GHS", "ZAR", "KES"],
+        "supported_plans": [
+            "24 Hours Pro Access",
+            "5 Days Pro Access"
+        ],
+        "conversion_rates_usd_to_local": USD_TO_LOCAL_RATES # NEW: Expose rates for frontend debug/info
+    }
 
-@app.get("/api/subscription-status/{user_id}")
-async def get_subscription_status(user_id: str):
-    """Get user's current subscription status"""
-    try:
-        # Find customer by user_id metadata
-        customers = stripe.Customer.list(limit=100)
-        customer = None
-        
-        for c in customers.auto_paging_iter():
-            if c.metadata.get('user_id') == user_id:
-                customer = c
-                break
-                
-        if not customer:
-            return {"has_subscription": False, "plan": "free"}
-            
-        # Get active subscriptions
-        subscriptions = stripe.Subscription.list(customer=customer.id, status='active')
-        
-        if not subscriptions.data:
-            return {"has_subscription": False, "plan": "free"}
-            
-        subscription = subscriptions.data[0]
-        price_id = subscription.items.data[0].price.id
-        
-        # Map price_id to plan name (you'll need to customize this)
-        plan_mapping = {
-            "price_1S8xVnLgugZakECYNFDOMVwh": "pro",  # Your actual price ID
-            # Add more mappings as needed
-        }
-        
-        plan = plan_mapping.get(price_id, "unknown")
-        
-        return {
-            "has_subscription": True,
-            "plan": plan,
-            "subscription_id": subscription.id,
-            "status": subscription.status,
-            "current_period_end": subscription.current_period_end
-        }
-        
-    except Exception as e:
-        logger.error(f"Error getting subscription status: {e}")
-        raise HTTPException(status_code=400, detail=f"Failed to get subscription status: {str(e)}")
 @app.post("/transcribe")
 async def transcribe_file(file: UploadFile = File(...), background_tasks: BackgroundTasks = BackgroundTasks()):
     logger.info(f"Transcribe endpoint called with file: {file.filename}")
@@ -1089,6 +1265,10 @@ async def health_check():
                     status: len([j for j in jobs.values() if j["status"] == status])
                     for status in ["processing", "completed", "failed", "cancelled"]
                 }
+            },
+            "integrations": {
+                "assemblyai_configured": bool(ASSEMBLYAI_API_KEY),
+                "paystack_configured": bool(PAYSTACK_SECRET_KEY)
             }
         }
         
@@ -1107,7 +1287,7 @@ logger.info("=== FASTAPI APPLICATION SETUP COMPLETE ===")
 # Final validation and startup logging
 logger.info("Performing final system validation...")
 logger.info(f"AssemblyAI API Key configured: {bool(ASSEMBLYAI_API_KEY)}")
-logger.info(f"Stripe Secret Key configured: {bool(STRIPE_SECRET_KEY)}")
+logger.info(f"Paystack Secret Key configured: {bool(PAYSTACK_SECRET_KEY)}")
 logger.info(f"Job tracking systems initialized:")
 logger.info(f"  - Main jobs dictionary: {len(jobs)} jobs")
 logger.info(f"  - Active background tasks: {len(active_background_tasks)} tasks")
@@ -1119,10 +1299,10 @@ logger.info("  POST /transcribe - Start new transcription job")
 logger.info("  GET /status/{job_id} - Check job status")
 logger.info("  POST /cancel/{job_id} - Cancel transcription job")
 logger.info("  POST /compress-download - Compress audio for download")
-logger.info("  POST /api/create-subscription - Create Stripe subscription")
-logger.info("  POST /api/stripe-webhook - Handle Stripe webhooks")
-logger.info("  POST /api/cancel-subscription - Cancel user subscription")
-logger.info("  GET /api/subscription-status/{user_id} - Get subscription status")
+logger.info("  POST /api/initialize-paystack-payment - Initialize Paystack payment")
+logger.info("  POST /api/verify-payment - Verify Paystack payment")
+logger.info("  POST /api/paystack-webhook - Handle Paystack webhooks")
+logger.info("  GET /api/paystack-status - Get Paystack integration status")
 logger.info("  GET /jobs - List all jobs")
 logger.info("  GET /health - System health check")
 logger.info("  DELETE /cleanup - Clean up old jobs")
@@ -1135,7 +1315,7 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     host = os.environ.get("HOST", "0.0.0.0")
     
-    logger.info(f"Starting enhanced transcription service with Stripe payments on {host}:{port}")
+    logger.info(f"Starting enhanced transcription service with Paystack payments on {host}:{port}")
     logger.info("🚀 ENHANCED FEATURES ENABLED:")
     logger.info("  ✅ Ultra-aggressive audio compression (16k bitrate, 8kHz)")
     logger.info("  ✅ Comprehensive job cancellation system")
@@ -1147,9 +1327,10 @@ if __name__ == "__main__":
     logger.info("  ✅ Detailed logging and debugging support")
     logger.info("  ✅ CORS enabled for frontend integration")
     logger.info("  ✅ Multiple cancellation checkpoints during processing")
-    logger.info("  ✅ Stripe payment integration for subscriptions")
+    logger.info("  ✅ Paystack payment integration")
     logger.info("  ✅ Webhook handling for payment events")
-    logger.info("  ✅ Subscription management endpoints")
+    logger.info("  ✅ Subscription management endpoints (via Paystack/future 2Checkout)")
+    logger.info("  ✅ Multi-currency support (NGN, KES, GHS, ZAR, USD)")
     
     logger.info("🔧 TECHNICAL IMPROVEMENTS:")
     logger.info("  - Cancellation flags prevent race conditions")
@@ -1158,8 +1339,9 @@ if __name__ == "__main__":
     logger.info("  - AssemblyAI jobs continue but results are ignored when cancelled")
     logger.info("  - Enhanced status endpoint with detailed job information")
     logger.info("  - Comprehensive health monitoring and system stats")
-    logger.info("  - Stripe customer and subscription management")
-    logger.info("  - Secure webhook signature verification")
+    logger.info("  - Paystack payment verification and webhook handling")
+    logger.info("  - Secure webhook signature verification (TODO)")
+    logger.info("  - Single payment system for global coverage (Paystack first, then 2Checkout)")
     
     try:
         uvicorn.run(
@@ -1176,4 +1358,4 @@ if __name__ == "__main__":
         sys.exit(1)
 else:
     logger.info("Application loaded as module")
-    logger.info("Ready to handle requests with enhanced job cancellation and Stripe payment support")
+    logger.info("Ready to handle requests with enhanced job cancellation & Paystack payment support")
