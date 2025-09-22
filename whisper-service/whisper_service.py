@@ -1,9 +1,10 @@
 import os
 import tempfile
 import logging
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form # NEW: Import Form
 from fastapi.middleware.cors import CORSMiddleware
 import whisper
+from typing import Optional # NEW: Import Optional
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -23,7 +24,9 @@ app.add_middleware(
 
 # Load Whisper model on startup
 logger.info("Loading Whisper model...")
-model = whisper.load_model("base")  # You can use "small", "medium", or "large" for better accuracy
+# Consider loading a larger model if you have enough RAM (e.g., "medium", "large")
+# model = whisper.load_model("medium") 
+model = whisper.load_model("base")  
 logger.info("Whisper model loaded successfully")
 
 @app.get("/")
@@ -35,8 +38,11 @@ async def root():
     }
 
 @app.post("/transcribe")
-async def transcribe_audio(file: UploadFile = File(...)):
-    logger.info(f"Received file: {file.filename}")
+async def transcribe_audio(
+    file: UploadFile = File(...),
+    language: Optional[str] = Form(None) # NEW: Optional language parameter
+):
+    logger.info(f"Received file: {file.filename}, requested language: {language}")
     
     # Check if file is audio/video
     if not file.content_type.startswith(('audio/', 'video/')):
@@ -49,9 +55,14 @@ async def transcribe_audio(file: UploadFile = File(...)):
             tmp_file.write(content)
             tmp_file.flush()
             
-            # Transcribe with Whisper
+            # Transcribe with Whisper, passing language if provided
             logger.info("Starting transcription...")
-            result = model.transcribe(tmp_file.name)
+            if language:
+                result = model.transcribe(tmp_file.name, language=language)
+                logger.info(f"Transcribed with language: {language}")
+            else:
+                result = model.transcribe(tmp_file.name)
+                logger.info("Transcribed with auto-detected language")
             
             # Clean up temp file
             os.unlink(tmp_file.name)
