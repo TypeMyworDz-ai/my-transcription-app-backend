@@ -12,7 +12,10 @@ RUN apt-get update && apt-get install -y \
 # Copy the requirements file into the container at /app
 COPY requirements.txt .
 
-# Install any needed packages specified in requirements.txt
+# NEW: Install PyTorch for CPU first, explicitly from the CPU index
+RUN pip install --no-cache-dir torch==2.1.0 --index-url https://download.pytorch.org/whl/cpu
+
+# Install any other needed packages specified in requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the rest of your application code into the container at /app
