@@ -2,8 +2,6 @@ services:
   - type: web
     name: whisper-transcription
     env: python
+    runtime: python3.11.0
     buildCommand: pip install -r requirements.txt
     startCommand: python whisper_service.py
-    envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.0
