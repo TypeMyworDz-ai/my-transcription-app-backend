@@ -23,7 +23,8 @@ import json # Added for Deepgram response handling
 DeepgramClient = None
 PrerecordedOptions = None
 try:
-    from deepgram import DeepgramClient, PrerecordedOptions # Corrected import path
+    from deepgram import DeepgramClient
+    from deepgram.models import PrerecordedOptions # CORRECTED import path
     logging.info("Deepgram SDK (DeepgramClient, PrerecordedOptions) imported successfully.")
 except ImportError as e:
     logging.warning(f"Deepgram SDK not installed or import error: {e}. Deepgram features will be disabled.")
