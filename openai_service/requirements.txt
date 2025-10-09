@@ -1,0 +1,14 @@
+# ====================================================================================================
+# frontend/openai_service/requirements.txt (UPDATED)
+# Dependencies for the dedicated OpenAI Whisper service
+# ====================================================================================================
+fastapi==0.111.0
+uvicorn==0.30.1
+openai==1.35.10
+python-multipart==0.0.20
+pydub==0.25.1
+httpx==0.28.1
+python-dotenv==1.0.1
+PyAudio==0.2.11 # ADDED: Required by pydub for some operations
+# ====================================================================================================
+deepgram-sdk
