@@ -24,14 +24,38 @@ COPY requirements.txt .
 # Upgrade pip, setuptools, and wheel first to ensure a robust installation environment
 RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 
-# Install any needed Python packages specified in requirements.txt
+# Force reinstall deepgram-sdk to bust cache and ensure latest version/clean install
+# This is a crucial step to eliminate any caching issues with deepgram-sdk itself.
+RUN pip install --no-cache-dir --force-reinstall deepgram-sdk
+
+# Install any other needed Python packages specified in requirements.txt (excluding deepgram-sdk as it's forced above)
 RUN pip install --no-cache-dir -r requirements.txt
 
-# --- NEW DIAGNOSTIC STEP: Verify Deepgram imports ---
-# This step will fail the build if DeepgramClient or PrerecordedOptions cannot be imported.
-# CORRECTED: PrerecordedOptions is imported from deepgram.models
-RUN python -c "import deepgram; from deepgram import DeepgramClient; from deepgram.models import PrerecordedOptions; print('Deepgram SDK components imported successfully in Docker build.')" || \
-    (echo '!!! ERROR: Deepgram SDK components import FAILED in Docker build. Check deepgram-sdk version and import path. !!!' && exit 1)
+# --- NEW COMPREHENSIVE DIAGNOSTIC STEP: Find PrerecordedOptions ---
+# This step will try to list the contents of the 'deepgram' package
+# and explicitly attempt to import PrerecordedOptions from various common locations.
+RUN python -c "\
+    import os, sys;\
+    try:\
+        import deepgram;\
+        print(f'--- Contents of deepgram package ({deepgram.__file__}): ---');\
+        for root, dirs, files in os.walk(os.path.dirname(deepgram.__file__)): \
+            for f in files + dirs: \
+                print(os.path.join(root, f)); \
+        print('--- End Deepgram package contents ---');\
+        \
+        # Attempt to import PrerecordedOptions from common locations\
+        try: from deepgram.models import PrerecordedOptions; print('SUCCESS: PrerecordedOptions found at deepgram.models'); sys.exit(0)\
+        except ImportError: pass;\
+        try: from deepgram import PrerecordedOptions; print('SUCCESS: PrerecordedOptions found at deepgram (top level)'); sys.exit(0)\
+        except ImportError: pass;\
+        \
+        print('!!! ERROR: PrerecordedOptions NOT FOUND after inspecting deepgram package. !!!'); sys.exit(1);\
+    except ImportError as e:\
+        print(f'!!! ERROR: Deepgram SDK (base module) failed to import during diagnostic: {e}. !!!'); sys.exit(1);\
+    " || \
+    (echo '!!! FATAL ERROR: Docker build diagnostic for Deepgram failed. !!!' && exit 1)
+
 
 # Copy the rest of your application code
 COPY . .
