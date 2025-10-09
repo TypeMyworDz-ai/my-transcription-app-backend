@@ -1,7 +1,7 @@
-# ======================================================================================
+# ==============================================================================
 # frontend/openai_service/Dockerfile (UPDATED for Deepgram, OpenAI, and robust pip)
 # Dockerfile for the dedicated OpenAI Whisper, GPT, and Deepgram service
-# ======================================================================================
+# ==============================================================================
 
 # Use an official Python runtime as a parent image
 FROM python:3.10-slim-bullseye
@@ -54,5 +54,3 @@ EXPOSE 8000
 # Define the command to run your application using python -m uvicorn
 # MODIFIED: Simplified CMD for better compatibility with Railway's Python detection
 CMD ["python", "-m", "uvicorn", "whisper_service:app", "--host", "0.0.0.0", "--port", "8000"]
-
-# ====================================================================================================
