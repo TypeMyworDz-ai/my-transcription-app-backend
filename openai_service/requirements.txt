@@ -12,3 +12,4 @@ python-dotenv==1.0.1
 PyAudio==0.2.11 # ADDED: Required by pydub for some operations
 # ====================================================================================================
 deepgram-sdk
+# Deepgram SDK added for transcription service
