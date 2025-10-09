@@ -27,10 +27,11 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 # Install any needed Python packages specified in requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# --- NEW DIAGNOSTIC STEP: Verify Deepgram PrerecordedOptions import ---
-# This step will fail the build if 'PrerecordedOptions' cannot be imported.
-RUN python -c "from deepgram.models import PrerecordedOptions; print('Deepgram PrerecordedOptions imported successfully in Docker build.')" || \
-    (echo '!!! ERROR: Deepgram PrerecordedOptions import FAILED in Docker build. Check deepgram-sdk version and import path. !!!' && exit 1)
+# --- NEW DIAGNOSTIC STEP: Verify Deepgram imports ---
+# This step will fail the build if DeepgramClient or PrerecordedOptions cannot be imported.
+# It explicitly checks for deepgram and deepgram.models
+RUN python -c "import deepgram; from deepgram import DeepgramClient; from deepgram.models import PrerecordedOptions; print('Deepgram SDK components imported successfully in Docker build.')" || \
+    (echo '!!! ERROR: Deepgram SDK components import FAILED in Docker build. Check deepgram-sdk version and import path. !!!' && exit 1)
 
 # Copy the rest of your application code
 COPY . .
