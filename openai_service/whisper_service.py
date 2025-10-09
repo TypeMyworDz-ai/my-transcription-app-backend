@@ -1,7 +1,7 @@
-# ======================================================================================
+# ==============================================================================
 # frontend/openai_service/whisper_service.py (UPDATED and SYNTAX-FIXED to include Deepgram)
 # Dedicated FastAPI service for OpenAI Whisper transcription, GPT Formatting, AND Deepgram transcription.
-# ======================================================================================
+# ==============================================================================
 
 import logging
 import sys
@@ -20,53 +20,15 @@ import httpx # Used by OpenAI client internally
 import json # Added for Deepgram response handling
 
 # Add Deepgram imports
+DeepgramClient = None
+PrerecordedOptions = None
 try:
-    # Attempt import for DeepgramClient and PrerecordedOptions
-    # These might be directly under 'deepgram' or in submodules like 'deepgram.options'
-    _deepgram_client_imported = False
-    _prerecorded_options_imported = False
-    
-    try:
-        from deepgram import DeepgramClient
-        _deepgram_client_imported = True
-    except ImportError:
-        try:
-            from deepgram.client import DeepgramClient
-            _deepgram_client_imported = True
-        except ImportError:
-            pass # DeepgramClient not found yet
-
-    try:
-        from deepgram import PrerecordedOptions
-        _prerecorded_options_imported = True
-    except ImportError:
-        try:
-            from deepgram.options import PrerecordedOptions
-            _prerecorded_options_imported = True
-        except ImportError:
-            pass # PrerecordedOptions not found yet
-
-    if not _deepgram_client_imported:
-        raise ImportError("DeepgramClient could not be found.")
-    if not _prerecorded_options_imported:
-        raise ImportError("PrerecordedOptions could not be found.")
-
+    from deepgram import DeepgramClient
+    # Corrected import path for PrerecordedOptions for deepgram-sdk v5
+    from deepgram.models import PrerecordedOptions 
+    logging.info("Deepgram SDK (DeepgramClient, PrerecordedOptions) imported successfully.")
 except ImportError as e:
-    DeepgramClient = None
-    PrerecordedOptions = None
     logging.warning(f"Deepgram SDK not installed or import error: {e}. Deepgram features will be disabled.")
-else:
-    # Only assign if successfully imported
-    if _deepgram_client_imported:
-        # DeepgramClient is already assigned from one of the above successful imports
-        pass 
-    else:
-        DeepgramClient = None # Fallback in case of unexpected partial import
-    if _prerecorded_options_imported:
-        # PrerecordedOptions is already assigned from one of the above successful imports
-        pass
-    else:
-        PrerecordedOptions = None # Fallback in case of unexpected partial import
 
 
 logging.basicConfig(
@@ -128,7 +90,7 @@ else:
     logger.warning("OpenAI API key is missing, OpenAI clients will not be initialized.")
 
 # NEW: Deepgram Client initialization
-deepgram_client = None # This will remain None, as we are calling an external service
+deepgram_client = None
 if DEEPGRAM_API_KEY and DeepgramClient and PrerecordedOptions: # Check if Deepgram components were successfully imported
     try:
         deepgram_client = DeepgramClient(DEEPGRAM_API_KEY)
@@ -274,6 +236,7 @@ async def transcribe_audio_deepgram(
 
         payload = {"buffer": buffer_data}
 
+        # Create PrerecordedOptions instance
         options = PrerecordedOptions(
             model="nova-3",
             language=language_code,
@@ -284,6 +247,7 @@ async def transcribe_audio_deepgram(
         )
 
         # Make the transcription request
+        # Use deepgram_client.listen.rest.v("1").transcribe_file for DeepgramClient
         response = await asyncio.to_thread(
             deepgram_client.listen.rest.v("1").transcribe_file,
             payload,
@@ -383,6 +347,6 @@ async def ai_admin_format_gpt(
 async def root():
     return {"message": "OpenAI Whisper, GPT, & Deepgram Transcription/Formatting Service is running!"}
 
-# ======================================================================================
+# ==============================================================================
 # END frontend/openai_service/whisper_service.py
-# ======================================================================================
+# ==============================================================================

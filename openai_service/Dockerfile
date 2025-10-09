@@ -27,23 +27,10 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 # Install any needed Python packages specified in requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# --- DIAGNOSTIC STEP 1: Verify Deepgram base import (Optional, for debugging) ---
-# Uncomment this if you want to explicitly check Deepgram import during build
-# RUN echo "--- Verifying Deepgram SDK (base module) after full requirements.txt install ---" && \
-#     python -c "import deepgram; print('Deepgram SDK (base module) imported successfully.')" || \
-#     (echo "!!! ERROR: Deepgram SDK (base module) failed to import. Check above logs for details. !!!" && exit 1)
-
-# --- DIAGNOSTIC STEP 2: Verify Uvicorn import (Optional, for debugging) ---
-# Uncomment this if you want to explicitly check Uvicorn import during build
-# RUN echo "--- Verifying Uvicorn module after full requirements.txt install ---" && \
-#     python -c "import uvicorn; print('Uvicorn module imported successfully.')" || \
-#     (echo "!!! ERROR: Uvicorn module failed to import. Check above logs for details. !!!" && exit 1)
-
-# --- DIAGNOSTIC STEP 3: Verify FastAPI import (Optional, for debugging) ---
-# Uncomment this if you want to explicitly check FastAPI import during build
-# RUN echo "--- Verifying FastAPI module after full requirements.txt install ---" && \
-#     python -c "import fastapi; print('FastAPI module imported successfully.')" || \
-#     (echo "!!! ERROR: FastAPI module failed to import. Check above logs for details. !!!" && exit 1)
+# --- NEW DIAGNOSTIC STEP: Verify Deepgram PrerecordedOptions import ---
+# This step will fail the build if 'PrerecordedOptions' cannot be imported.
+RUN python -c "from deepgram.models import PrerecordedOptions; print('Deepgram PrerecordedOptions imported successfully in Docker build.')" || \
+    (echo '!!! ERROR: Deepgram PrerecordedOptions import FAILED in Docker build. Check deepgram-sdk version and import path. !!!' && exit 1)
 
 # Copy the rest of your application code
 COPY . .
