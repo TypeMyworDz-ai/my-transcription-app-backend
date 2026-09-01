@@ -10,13 +10,16 @@ FROM python:3.10-slim-bullseye
 WORKDIR /app
 
 # Install system dependencies needed for pydub, Deepgram, and general Python compilation
-RUN apt-get update && apt-get install -y \
+# ffmpeg is the only system package this service actually needs, for pydub.
+# The portaudio and build-tool packages were only there to compile PyAudio,
+# which the code never imports and which ships no prebuilt wheel, so both the
+# package and its build dependencies are gone. --no-install-recommends keeps
+# apt from dragging in graphics drivers a server will never use, and the
+# retries ride out Debian mirror hiccups that were failing the build outright.
+RUN apt-get update -o Acquire::Retries=5 \
+    && apt-get install -y --no-install-recommends -o Acquire::Retries=5 \
     ffmpeg \
-    libportaudio2 \
-    portaudio19-dev \
-    build-essential \
-    python3-dev \
-    && rm -rf /var/lib/apt/lists/* # Corrected typo here
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy the requirements file into the container
 COPY requirements.txt .
